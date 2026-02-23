@@ -22,9 +22,9 @@ Uranus:[{name:"Miranda",color:"#beb7ad",radiusKm:235.8,massKg:6.59e19,orbitRadiu
 Neptune:[{name:"Triton",color:"#c8cdd2",radiusKm:1353.4,massKg:2.139e22,orbitRadiusKm:354759,periodDays:5.877,phaseDeg:30,incDeg:157},{name:"Nereid",color:"#b2b9c0",radiusKm:170,massKg:3.1e19,orbitRadiusKm:5_513_818,periodDays:360.13,phaseDeg:180,incDeg:7.2}],
 };
 const BODY_MAP=Object.fromEntries(BODIES.map(b=>[b.name,b])),BODY_ORDER=BODIES.map(b=>b.name),SCENE_RADIUS=Math.max(...BODIES.map(b=>b.a));
-const scene={showOrbits:true,showMoons:true,showBelts:true,showLagrange:false,selectedBody:"Sun",selectedMoon:null,selectedLagrange:null,lockBody:"Sun",lagrangePrimary:"Sun",lagrangeSecondary:"Earth",simDays:0,simSpeed:2,running:true,yaw:35*DEG,pitch:20*DEG,distance:SCENE_RADIUS*2.3,focus:{x:0,y:0,z:0},dragMode:null,dragStart:null,lastClickMs:0};
+const scene={showOrbits:true,showAllOrbits:false,showMoons:false,showBelts:true,showLagrange:false,selectedBody:"Sun",selectedMoon:null,selectedLagrange:null,lockBody:"Sun",lagrangePrimary:"Sun",lagrangeSecondary:"Earth",lastSelectedPlanet:"Earth",simDays:0,simSpeed:2,running:true,yaw:35*DEG,pitch:20*DEG,distance:SCENE_RADIUS*2.3,focus:{x:0,y:0,z:0},dragMode:null,dragStart:null,lastClickMs:0};
 const canvas=document.getElementById("scene"),statusLine=document.getElementById("statusLine"),ctx=canvas.getContext("2d"),startEpochMs=Date.now();
-const speedSlider=document.getElementById("speedSlider"),speedValue=document.getElementById("speedValue"),pauseBtn=document.getElementById("pauseBtn");
+const speedSlider=document.getElementById("speedSlider"),speedValue=document.getElementById("speedValue"),pauseBtn=document.getElementById("pauseBtn"),allOrbitsBtn=document.getElementById("allOrbitsBtn");
 if(statusLine)statusLine.textContent="Simulation script loaded. Booting...";
 window.addEventListener("error",e=>{if(statusLine)statusLine.textContent=`Runtime error: ${e.message}`;});
 window.addEventListener("unhandledrejection",e=>{if(statusLine)statusLine.textContent=`Promise error: ${e.reason?.message||String(e.reason)}`;});
@@ -47,6 +47,7 @@ function bodyRadiusPx(radiusKm,depth,name){const f=Math.min(width,height)*.95,px
 function velocityInfo(vel){const au=norm(vel),km=(au*AU_KM)/SECONDS_PER_DAY,u=au>0?mul(vel,1/au):v(),lon=Math.atan2(u.y,u.x)/DEG,lat=Math.atan2(u.z,Math.hypot(u.x,u.y))/DEG;return{km,u,lon,lat};}
 function targetRadiusKm(target){if(BODY_MAP[target])return BODY_MAP[target].radiusKm;const p=parseMoonToken(target);if(!p)return null;const moon=MOONS[p.parent]?.find(m=>m.name===p.moon);return moon?moon.radiusKm:null;}
 function spinAngle(name,tDays){const h=SPIN_HOURS[name];if(!h)return 0;const rotDays=h/24;return((tDays/rotDays)*TAU)%TAU;}
+function applyUnlockedLagrangeDefault(){const p=scene.lastSelectedPlanet;if(p&&p!=="Sun"&&BODY_MAP[p]){scene.lagrangePrimary="Sun";scene.lagrangeSecondary=p;}}
 
 function buildState(t){
   const e=.001,bodyStates={},moonStates={};
@@ -56,6 +57,16 @@ function buildState(t){
 }
 function resolveTargetState(target,state){if(state.bodyStates[target])return state.bodyStates[target];const p=parseMoonToken(target);return p?state.moonStates[p.parent]?.[p.moon]||null:null;}
 function secondaryCandidates(){const out=BODY_ORDER.filter(b=>b!==scene.lagrangePrimary);if(scene.showLagrange&&scene.lockBody&&MOONS[scene.lockBody])for(const m of MOONS[scene.lockBody])out.push(moonToken(scene.lockBody,m.name));return out;}
+function syncLagrangeWithLock(state){
+  if(!scene.lockBody)return;
+  const moonLock=parseMoonToken(scene.lockBody);
+  if(moonLock){scene.lagrangePrimary=moonLock.parent;scene.lagrangeSecondary=scene.lockBody;return;}
+  if(!MOONS[scene.lockBody]?.length)return;
+  const parent=scene.lockBody,selectedTok=scene.selectedMoon&&scene.selectedBody===parent?moonToken(parent,scene.selectedMoon):null;
+  const validMoon=selectedTok&&resolveTargetState(selectedTok,state)?selectedTok:null;
+  scene.lagrangePrimary=parent;
+  scene.lagrangeSecondary=validMoon||moonToken(parent,MOONS[parent][0].name);
+}
 function computeLagrange(state){
   if(scene.lagrangePrimary===scene.lagrangeSecondary)return[];const p1=resolveTargetState(scene.lagrangePrimary,state),p2=resolveTargetState(scene.lagrangeSecondary,state);if(!p1||!p2)return[];
   const rVec=sub(p2.pos,p1.pos),r=norm(rVec);if(r<=1e-12)return[];const u=unit(rVec),mu=p2.massKg/(p1.massKg+p2.massKg),h=unit(cross(rVec,sub(p2.vel,p1.vel)),v(0,0,1)),vDir=unit(cross(h,u),v(0,1,0)),d=r*Math.pow(mu/3,1/3);
@@ -72,7 +83,7 @@ function fillRoundRect(x,y,w,h,r){const rr=Math.max(0,Math.min(r,Math.min(w,h)*.
 function strokeRoundRect(x,y,w,h,r){const rr=Math.max(0,Math.min(r,Math.min(w,h)*.5));ctx.beginPath();ctx.moveTo(x+rr,y);ctx.lineTo(x+w-rr,y);ctx.quadraticCurveTo(x+w,y,x+w,y+rr);ctx.lineTo(x+w,y+h-rr);ctx.quadraticCurveTo(x+w,y+h,x+w-rr,y+h);ctx.lineTo(x+rr,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-rr);ctx.lineTo(x,y+rr);ctx.quadraticCurveTo(x,y,x+rr,y);ctx.closePath();ctx.stroke();}
 
 function drawPanels(state){
-  const epoch=new Date(startEpochMs+scene.simDays*86400000).toISOString(),liveUtc=new Date().toISOString(),selBody=state.bodyStates[scene.selectedBody],selMoon=scene.selectedMoon?state.moonStates[scene.selectedBody]?.[scene.selectedMoon]:null,bv=velocityInfo(selBody.vel),lines=[`Selected: ${scene.selectedBody}`,`Lock: ${scene.lockBody?targetLabel(scene.lockBody):"None"}`,`Lagrange Pair: ${targetLabel(scene.lagrangePrimary)} -> ${targetLabel(scene.lagrangeSecondary)} (${scene.showLagrange?"ON":"OFF"})`,`Belts: ${scene.showBelts?"ON":"OFF"} | Orbits: ${scene.showOrbits?"ON":"OFF"} | Moons: ${scene.showMoons?"ON":"OFF"}`];
+  const epoch=new Date(startEpochMs+scene.simDays*86400000).toISOString(),liveUtc=new Date().toISOString(),selBody=state.bodyStates[scene.selectedBody],selMoon=scene.selectedMoon?state.moonStates[scene.selectedBody]?.[scene.selectedMoon]:null,bv=velocityInfo(selBody.vel),lines=[`Selected: ${scene.selectedBody}`,`Lock: ${scene.lockBody?targetLabel(scene.lockBody):"None"}`,`Lagrange Pair: ${targetLabel(scene.lagrangePrimary)} -> ${targetLabel(scene.lagrangeSecondary)} (${scene.showLagrange?"ON":"OFF"})`,`Belts: ${scene.showBelts?"ON":"OFF"} | Orbits: ${scene.showOrbits?"ON":"OFF"} | All Orbits: ${scene.showAllOrbits?"ON":"OFF"} | Moons: ${scene.showMoons?"ON":"OFF"}`];
   if(selMoon){const relPos=sub(selMoon.pos,selBody.pos),relVel=sub(selMoon.vel,selBody.vel),rel=velocityInfo(relVel),sun=velocityInfo(selMoon.vel);lines.push(`Moon Selected: ${scene.selectedMoon} (parent: ${scene.selectedBody})`,`Mass: ${selMoon.massKg.toExponential(6)} kg`,`Position rel ${scene.selectedBody} (AU): x=${relPos.x.toFixed(9)} y=${relPos.y.toFixed(9)} z=${relPos.z.toFixed(9)}`,`Velocity rel ${scene.selectedBody} (AU/day): vx=${relVel.x.toFixed(9)} vy=${relVel.y.toFixed(9)} vz=${relVel.z.toFixed(9)}`,`Speed rel ${scene.selectedBody}: ${rel.km.toFixed(4)} km/s`,`Speed rel Sun: ${sun.km.toFixed(4)} km/s`);}
   else lines.push(`Mass: ${selBody.massKg.toExponential(6)} kg`,`Position rel Sun (AU): x=${selBody.pos.x.toFixed(9)} y=${selBody.pos.y.toFixed(9)} z=${selBody.pos.z.toFixed(9)}`,`Velocity rel Sun (AU/day): vx=${selBody.vel.x.toFixed(9)} vy=${selBody.vel.y.toFixed(9)} vz=${selBody.vel.z.toFixed(9)}`,`Speed: ${bv.km.toFixed(4)} km/s`,`Direction unit vector: x=${bv.u.x.toFixed(5)} y=${bv.u.y.toFixed(5)} z=${bv.u.z.toFixed(5)}`,`Direction angles (ecliptic): lon=${bv.lon.toFixed(2)} deg lat=${bv.lat.toFixed(2)} deg`);
   if(scene.selectedLagrange){const st=lagrangeStability(scene.selectedLagrange,state);lines.push(`Lagrange Selected: ${scene.selectedLagrange} (${targetLabel(scene.lagrangePrimary)}-${targetLabel(scene.lagrangeSecondary)})`,`Stability: ${st.text} | Score=${(st.score*100).toFixed(1)}/100 | mu=${st.mu.toFixed(6)} (mu_crit=${MU_ROUTH.toFixed(6)})`);}
@@ -97,9 +108,9 @@ function findHit(mx,my){
   let hit=null,best=Infinity;for(const b of projectedBodies){const r=Math.max(b.drawRadius,6),d2=(mx-b.sx)**2+(my-b.sy)**2;if(d2<=r*r&&d2<best){best=d2;hit=b;}}return hit?{type:"body",item:hit}:null;
 }
 function applySingleClick(hit){
-  if(hit?.type==="moon"){scene.selectedMoon=hit.item.name;scene.selectedBody=hit.item.parent;scene.selectedLagrange=null;if(scene.showLagrange){scene.lagrangePrimary=hit.item.parent;scene.lagrangeSecondary=moonToken(hit.item.parent,hit.item.name);}return;}
+  if(hit?.type==="moon"){scene.selectedMoon=hit.item.name;scene.selectedBody=hit.item.parent;scene.lastSelectedPlanet=hit.item.parent;scene.selectedLagrange=null;if(scene.showLagrange){scene.lagrangePrimary=hit.item.parent;scene.lagrangeSecondary=moonToken(hit.item.parent,hit.item.name);}return;}
   if(hit?.type==="lagrange"){scene.selectedLagrange=hit.item.label;scene.selectedMoon=null;return;}
-  if(hit?.type==="body"){scene.selectedBody=hit.item.name;scene.selectedMoon=null;scene.selectedLagrange=null;if(scene.showLagrange&&hit.item.name!==scene.lagrangePrimary)scene.lagrangeSecondary=hit.item.name;}else{scene.selectedMoon=null;scene.selectedLagrange=null;}
+  if(hit?.type==="body"){scene.selectedBody=hit.item.name;if(hit.item.name!=="Sun")scene.lastSelectedPlanet=hit.item.name;scene.selectedMoon=null;scene.selectedLagrange=null;if(scene.showLagrange&&hit.item.name!==scene.lagrangePrimary)scene.lagrangeSecondary=hit.item.name;}else{scene.selectedMoon=null;scene.selectedLagrange=null;}
 }
 function syncSpeedUi(){
   const v1=scene.simSpeed.toFixed(2);
@@ -107,14 +118,28 @@ function syncSpeedUi(){
   if(speedValue)speedValue.textContent=scene.simSpeed.toFixed(2);
 }
 function syncPauseUi(){if(pauseBtn)pauseBtn.textContent=scene.running?"Pause":"Resume";}
+function syncAllOrbitsUi(){if(allOrbitsBtn)allOrbitsBtn.textContent=`All Orbits: ${scene.showAllOrbits?"On":"Off"}`;}
 
 function render(ts){
   if(!render.last)render.last=ts;const dt=Math.min(.05,(ts-render.last)/1000);render.last=ts;if(scene.running)scene.simDays+=dt*scene.simSpeed;
   drawBackground();const st=buildState(scene.simDays);projectedBodies=[];projectedMoons=[];projectedLagrange=[];
   if(scene.lockBody){const lockState=resolveTargetState(scene.lockBody,st);if(lockState)scene.focus={...lockState.pos};}
+  syncLagrangeWithLock(st);
   for(const b of BODIES){const bs=st.bodyStates[b.name],pr=project(bs.pos);if(!pr)continue;projectedBodies.push({name:b.name,pos:bs.pos,vel:bs.vel,massKg:bs.massKg,radiusKm:bs.radiusKm,color:bs.color,sx:pr.sx,sy:pr.sy,depth:pr.depth,drawRadius:bodyRadiusPx(bs.radiusKm,pr.depth,b.name)});}
   if(scene.showBelts)drawBelts();
-  if(scene.showOrbits&&scene.selectedBody!=="Sun"){const sun=st.bodyStates.Sun,sb=st.bodyStates[scene.selectedBody];if(sun&&sb)drawOrbit(sun.pos,sub(sb.pos,sun.pos),sub(sb.vel,sun.vel),BODY_MAP[scene.selectedBody].color);}
+  if(scene.showOrbits){
+    const sun=st.bodyStates.Sun;
+    if(scene.showAllOrbits){
+      for(const b of BODIES){
+        if(b.name==="Sun")continue;
+        const bs=st.bodyStates[b.name];
+        if(sun&&bs)drawOrbit(sun.pos,sub(bs.pos,sun.pos),sub(bs.vel,sun.vel),b.color);
+      }
+    }else if(scene.selectedBody!=="Sun"){
+      const sb=st.bodyStates[scene.selectedBody];
+      if(sun&&sb)drawOrbit(sun.pos,sub(sb.pos,sun.pos),sub(sb.vel,sun.vel),BODY_MAP[scene.selectedBody].color);
+    }
+  }
   if(scene.selectedMoon){const m=st.moonStates[scene.selectedBody]?.[scene.selectedMoon],p=st.bodyStates[scene.selectedBody];if(m&&p)drawOrbit(p.pos,sub(m.pos,p.pos),sub(m.vel,p.vel),"#cfd3da");}
   if(scene.showMoons&&MOONS[scene.selectedBody]){for(const m of MOONS[scene.selectedBody]){const ms=st.moonStates[scene.selectedBody]?.[m.name];if(!ms)continue;const pr=project(ms.pos);if(!pr)continue;const r=bodyRadiusPx(ms.radiusKm,pr.depth,m.name),row={name:m.name,parent:scene.selectedBody,sx:pr.sx,sy:pr.sy,depth:pr.depth,drawRadius:r,label:m.name};projectedMoons.push(row);ctx.fillStyle=m.color;ctx.beginPath();ctx.arc(pr.sx,pr.sy,r,0,TAU);ctx.fill();ctx.fillStyle="#cfd3da";ctx.font="10px Consolas, monospace";ctx.fillText(m.name,pr.sx+6,pr.sy-6);}}
   for(const b of [...projectedBodies].sort((a,b)=>b.depth-a.depth)){drawBody(b);if(b.name==="Sun"){ctx.fillStyle="#000";ctx.font="bold 12px Consolas, monospace";ctx.fillText("SUN",b.sx+15,b.sy-13);ctx.fillStyle="#ffe88a";ctx.fillText("SUN",b.sx+14,b.sy-14);}else{ctx.fillStyle="#fff";ctx.font="12px Consolas, monospace";ctx.fillText(b.name,b.sx+8,b.sy-8);}}
@@ -126,18 +151,19 @@ function render(ts){
 }
 function safeRender(ts){try{render(ts);}catch(err){if(statusLine)statusLine.textContent=`Runtime error: ${err?.message||String(err)}`;}}
 function onDown(e){canvas.setPointerCapture(e.pointerId);scene.dragStart={x:e.clientX,y:e.clientY,yaw:scene.yaw,pitch:scene.pitch,focus:{...scene.focus}};scene.dragMode=e.button===2?"orbit":(e.button===1?"pan":"left");}
-function onMove(e){if(!scene.dragStart||!scene.dragMode)return;const dx=e.clientX-scene.dragStart.x,dy=e.clientY-scene.dragStart.y;if(scene.dragMode==="orbit"){scene.yaw=scene.dragStart.yaw+dx*.005;scene.pitch=clamp(scene.dragStart.pitch-dy*.005,-85*DEG,85*DEG);}else if(scene.dragMode==="pan"){if(scene.lockBody)scene.lockBody=null;const s=(scene.distance/(Math.min(width,height)*.95))*2,{right,up}=panBasis(),worldDelta=add(mul(right,-dx*s),mul(up,dy*s));scene.focus=add(scene.dragStart.focus,worldDelta);}}
-function onUp(e){const r=canvas.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;if(scene.dragMode==="left"&&scene.dragStart){const moved=Math.hypot(e.clientX-scene.dragStart.x,e.clientY-scene.dragStart.y);if(moved<4){const hit=findHit(mx,my),now=performance.now(),dbl=now-scene.lastClickMs<=300;if(dbl){if(!hit){if(scene.lockBody)scene.lockBody=null;scene.selectedMoon=null;}else if(hit.type==="body"){if(scene.lockBody===hit.item.name)scene.lockBody=null;else{scene.selectedBody=hit.item.name;scene.selectedMoon=null;scene.selectedLagrange=null;scene.lockBody=hit.item.name;if(hit.item.name!==scene.lagrangePrimary)scene.lagrangeSecondary=hit.item.name;}}else if(hit.type==="moon"){const tok=moonToken(hit.item.parent,hit.item.name);if(scene.lockBody===tok)scene.lockBody=null;else{scene.selectedBody=hit.item.parent;scene.selectedMoon=hit.item.name;scene.selectedLagrange=null;scene.lockBody=tok;if(scene.showLagrange){scene.lagrangePrimary=hit.item.parent;scene.lagrangeSecondary=tok;}}}scene.lastClickMs=0;}else{applySingleClick(hit);scene.lastClickMs=now;}}}scene.dragMode=null;scene.dragStart=null;canvas.releasePointerCapture(e.pointerId);}
+function onMove(e){if(!scene.dragStart||!scene.dragMode)return;const dx=e.clientX-scene.dragStart.x,dy=e.clientY-scene.dragStart.y;if(scene.dragMode==="orbit"){scene.yaw=scene.dragStart.yaw+dx*.005;scene.pitch=clamp(scene.dragStart.pitch-dy*.005,-85*DEG,85*DEG);}else if(scene.dragMode==="pan"){if(scene.lockBody){scene.lockBody=null;applyUnlockedLagrangeDefault();}const s=(scene.distance/(Math.min(width,height)*.95))*2,{right,up}=panBasis(),worldDelta=add(mul(right,-dx*s),mul(up,dy*s));scene.focus=add(scene.dragStart.focus,worldDelta);}}
+function onUp(e){const r=canvas.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;if(scene.dragMode==="left"&&scene.dragStart){const moved=Math.hypot(e.clientX-scene.dragStart.x,e.clientY-scene.dragStart.y);if(moved<4){const hit=findHit(mx,my),now=performance.now(),dbl=now-scene.lastClickMs<=300;if(dbl){if(!hit){if(scene.lockBody){scene.lockBody=null;applyUnlockedLagrangeDefault();}scene.selectedMoon=null;}else if(hit.type==="body"){if(scene.lockBody===hit.item.name){scene.lockBody=null;applyUnlockedLagrangeDefault();}else{scene.selectedBody=hit.item.name;if(hit.item.name!=="Sun")scene.lastSelectedPlanet=hit.item.name;scene.selectedMoon=null;scene.selectedLagrange=null;scene.lockBody=hit.item.name;if(hit.item.name!==scene.lagrangePrimary)scene.lagrangeSecondary=hit.item.name;}}else if(hit.type==="moon"){const tok=moonToken(hit.item.parent,hit.item.name);if(scene.lockBody===tok){scene.lockBody=null;applyUnlockedLagrangeDefault();}else{scene.selectedBody=hit.item.parent;scene.lastSelectedPlanet=hit.item.parent;scene.selectedMoon=hit.item.name;scene.selectedLagrange=null;scene.lockBody=tok;if(scene.showLagrange){scene.lagrangePrimary=hit.item.parent;scene.lagrangeSecondary=tok;}}}scene.lastClickMs=0;}else{applySingleClick(hit);scene.lastClickMs=now;}}}scene.dragMode=null;scene.dragStart=null;canvas.releasePointerCapture(e.pointerId);}
 function onWheel(e){e.preventDefault();scene.distance*=e.deltaY>0?1.08:.92;let min=SCENE_RADIUS*.02;if(scene.lockBody){const rKm=targetRadiusKm(scene.lockBody);if(rKm)min=Math.max((rKm/AU_KM)*1.01,SCENE_RADIUS*1e-7);}scene.distance=clamp(scene.distance,min,SCENE_RADIUS*10);}
 function nextBody(current,exclude){const idx=BODY_ORDER.includes(current)?BODY_ORDER.indexOf(current):-1;for(let i=1;i<=BODY_ORDER.length;i++){const c=BODY_ORDER[(idx+i+BODY_ORDER.length)%BODY_ORDER.length];if(c!==exclude)return c;}return current;}
 function cyclePrimary(){scene.lagrangePrimary=nextBody(scene.lagrangePrimary,scene.lagrangeSecondary);scene.selectedLagrange=null;}
 function cycleSecondary(){const c=secondaryCandidates();if(!c.length)return;const i=c.indexOf(scene.lagrangeSecondary);scene.lagrangeSecondary=i<0?c[0]:c[(i+1)%c.length];scene.selectedLagrange=null;}
-function onKey(e){const k=e.key.toLowerCase();if(k==="e"){scene.selectedBody="Earth";scene.selectedMoon=null;scene.selectedLagrange=null;scene.lockBody="Earth";if(scene.lagrangePrimary!=="Earth")scene.lagrangeSecondary="Earth";}else if(k==="s"){scene.selectedBody="Sun";scene.selectedMoon=null;scene.selectedLagrange=null;scene.lockBody="Sun";if(scene.lagrangePrimary!=="Sun")scene.lagrangeSecondary="Sun";}else if(k==="escape"){scene.lockBody=null;scene.selectedMoon=null;scene.selectedLagrange=null;}else if(k==="l"){scene.showLagrange=!scene.showLagrange;if(!scene.showLagrange)scene.selectedLagrange=null;}else if(k==="b")scene.showBelts=!scene.showBelts;else if(k==="r")scene.showOrbits=!scene.showOrbits;else if(k==="m")scene.showMoons=!scene.showMoons;else if(k==="o")cyclePrimary();else if(k==="p")cycleSecondary();else if(k==="="||k==="+"){scene.simSpeed=clamp(scene.simSpeed*1.2,0,30);syncSpeedUi();}else if(k==="-"||k==="_"){scene.simSpeed=clamp(scene.simSpeed/1.2,0,30);syncSpeedUi();}else if(k===" "){scene.running=!scene.running;syncPauseUi();}}
+function onKey(e){const k=e.key.toLowerCase();if(k==="e"){scene.selectedBody="Earth";scene.lastSelectedPlanet="Earth";scene.selectedMoon=null;scene.selectedLagrange=null;scene.lockBody="Earth";if(scene.lagrangePrimary!=="Earth")scene.lagrangeSecondary="Earth";}else if(k==="s"){scene.selectedBody="Sun";scene.selectedMoon=null;scene.selectedLagrange=null;scene.lockBody="Sun";if(scene.lagrangePrimary!=="Sun")scene.lagrangeSecondary="Sun";}else if(k==="escape"){scene.lockBody=null;applyUnlockedLagrangeDefault();scene.selectedMoon=null;scene.selectedLagrange=null;}else if(k==="l"){scene.showLagrange=!scene.showLagrange;if(!scene.showLagrange)scene.selectedLagrange=null;}else if(k==="b")scene.showBelts=!scene.showBelts;else if(k==="r")scene.showOrbits=!scene.showOrbits;else if(k==="a"){scene.showAllOrbits=!scene.showAllOrbits;syncAllOrbitsUi();}else if(k==="m")scene.showMoons=!scene.showMoons;else if(k==="o")cyclePrimary();else if(k==="p")cycleSecondary();else if(k==="="||k==="+"){scene.simSpeed=clamp(scene.simSpeed*1.2,0,30);syncSpeedUi();}else if(k==="-"||k==="_"){scene.simSpeed=clamp(scene.simSpeed/1.2,0,30);syncSpeedUi();}else if(k===" "){scene.running=!scene.running;syncPauseUi();}}
 canvas.addEventListener("contextmenu",e=>e.preventDefault());canvas.addEventListener("pointerdown",onDown);canvas.addEventListener("pointermove",onMove);canvas.addEventListener("pointerup",onUp);canvas.addEventListener("wheel",onWheel,{passive:false});window.addEventListener("resize",resize);window.addEventListener("keydown",onKey);
 if(speedSlider){
   speedSlider.value=scene.simSpeed.toFixed(2);
   speedSlider.addEventListener("input",()=>{scene.simSpeed=clamp(Number(speedSlider.value),0,30);syncSpeedUi();});
 }
 if(pauseBtn)pauseBtn.addEventListener("click",()=>{scene.running=!scene.running;syncPauseUi();});
-syncSpeedUi();syncPauseUi();
+if(allOrbitsBtn)allOrbitsBtn.addEventListener("click",()=>{scene.showAllOrbits=!scene.showAllOrbits;syncAllOrbitsUi();});
+syncSpeedUi();syncPauseUi();syncAllOrbitsUi();
 resize();requestAnimationFrame(safeRender);
